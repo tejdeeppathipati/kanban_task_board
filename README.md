@@ -1,6 +1,6 @@
 # Kanban Task Board Assessment
 
-A polished full-stack Kanban task board built with React, TypeScript, Vite, and Supabase. The app supports signed-in workspaces, optional guest mode, collaborator invites, and Row Level Security.
+A polished full-stack Kanban task board built with React, TypeScript, Vite, Supabase, and an optional Go backend API. The app supports signed-in workspaces, optional guest mode, collaborator invites, and Row Level Security.
 
 ## Features
 
@@ -23,6 +23,7 @@ A polished full-stack Kanban task board built with React, TypeScript, Vite, and 
 - Board summary stats for total, done, overdue, and high-priority tasks
 - Loading, empty, setup, and error states
 - Responsive layout for desktop and mobile
+- **Optional Go backend API** with JWT authentication and RLS passthrough
 
 ## Tech Stack
 
@@ -30,7 +31,8 @@ A polished full-stack Kanban task board built with React, TypeScript, Vite, and 
 - TypeScript
 - Vite
 - Supabase Auth and Postgres
-- Plain CSS for a custom product-style interface
+- Plain CSS for a neutral, product-focused task board UI
+- Go (optional backend API with Chi router, pgx, and JWT middleware)
 
 ## Local Setup
 
@@ -69,18 +71,80 @@ A polished full-stack Kanban task board built with React, TypeScript, Vite, and 
    npm run dev
    ```
 
+## Go Backend (Optional)
+
+The `server/` directory contains an optional Go REST API that sits between the React frontend and Supabase Postgres.
+
+### Architecture
+
+```
+React Frontend ──(Bearer JWT)──► Go API ──(pgx + SET LOCAL)──► Supabase Postgres
+```
+
+The Go API verifies Supabase JWTs, then uses `SET LOCAL request.jwt.claims` per-transaction so **all existing RLS policies work unchanged** — no security logic is duplicated in Go.
+
+### Go API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/health` | Health check |
+| GET | `/api/tasks?workspace_id=<uuid>` | List tasks |
+| POST | `/api/tasks` | Create a task |
+| PATCH | `/api/tasks/{id}` | Update a task |
+| DELETE | `/api/tasks/{id}` | Delete a task |
+| GET | `/api/tasks/{id}/comments` | List comments |
+| POST | `/api/tasks/{id}/comments` | Add a comment |
+| GET | `/api/tasks/{id}/activity` | List activity |
+| GET | `/api/team-members?workspace_id=<uuid>` | List team members |
+| POST | `/api/team-members` | Create a team member |
+| GET | `/api/labels?workspace_id=<uuid>` | List labels |
+| POST | `/api/labels` | Create a label |
+
+### Running the Go Server
+
+1. Install Go (1.21+):
+
+   ```bash
+   brew install go
+   ```
+
+2. Configure environment:
+
+   ```bash
+   cd server
+   cp .env.example .env
+   ```
+
+   Fill in `SUPABASE_DB_URL` (from Supabase Dashboard → Settings → Database → Connection String) and `SUPABASE_JWT_SECRET` (from Settings → API → JWT Secret).
+
+3. Run:
+
+   ```bash
+   cd server
+   go run .
+   ```
+
+4. Connect the frontend by adding to `.env.local`:
+
+   ```
+   VITE_API_URL=http://localhost:8080
+   ```
+
+The frontend supports **dual mode**: when `VITE_API_URL` is set, it routes requests through the Go API; otherwise it falls back to direct Supabase calls.
+
 ## Verification
 
 ```bash
 npm run lint
 npm run build
+cd server && go build ./... && go vet ./...
 ```
 
-Both commands pass in this workspace.
+All checks pass in this workspace.
 
 ## Deployment
 
-The easiest free deployment path is Vercel or Netlify.
+The easiest free deployment path is Vercel or Netlify for the frontend.
 
 For Vercel:
 
@@ -88,6 +152,8 @@ For Vercel:
 2. Import it into Vercel.
 3. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as project environment variables.
 4. Deploy.
+
+For the Go backend (optional), deploy to Render or Fly.io on the free tier.
 
 Never commit a Supabase service role key. This app only needs the public anon key because RLS policies isolate each guest user's rows.
 
@@ -113,4 +179,4 @@ Tables:
 
 ## Notes
 
-Starter team members and labels are created automatically for a new workspace. Tasks are not seeded, so users begin with a clean board and can optionally load sample data.
+Starter team members and labels are created automatically for a new workspace. Tasks are not seeded, so users begin with a clean board backed by their database rows.

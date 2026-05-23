@@ -69,6 +69,9 @@ create table if not exists public.team_members (
 create table if not exists public.tasks (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade default auth.uid(),
+  created_by uuid not null references auth.users(id) on delete cascade default auth.uid(),
+  scope text not null default 'personal'
+    check (scope in ('personal', 'team')),
   title text not null check (length(trim(title)) between 1 and 160),
   description text not null default '',
   status text not null default 'todo'
@@ -80,6 +83,21 @@ create table if not exists public.tasks (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.tasks
+  add column if not exists created_by uuid references auth.users(id) on delete cascade;
+
+alter table public.tasks
+  add column if not exists scope text not null default 'personal'
+    check (scope in ('personal', 'team'));
+
+update public.tasks
+set created_by = user_id
+where created_by is null;
+
+alter table public.tasks
+  alter column created_by set default auth.uid(),
+  alter column created_by set not null;
 
 create table if not exists public.task_assignees (
   task_id uuid not null references public.tasks(id) on delete cascade,
@@ -251,14 +269,27 @@ with check (public.can_access_workspace(user_id));
 create policy "tasks are isolated by guest user"
 on public.tasks
 for all
-using (auth.uid() = user_id)
-with check (auth.uid() = user_id);
+using (
+  scope = 'personal'
+  and created_by = auth.uid()
+)
+with check (
+  scope = 'personal'
+  and created_by = auth.uid()
+);
 
 create policy "tasks are shared with workspace collaborators"
 on public.tasks
 for all
-using (public.can_access_workspace(user_id))
-with check (public.can_access_workspace(user_id));
+using (
+  scope = 'team'
+  and public.can_access_workspace(user_id)
+)
+with check (
+  scope = 'team'
+  and created_by = auth.uid()
+  and public.can_access_workspace(user_id)
+);
 
 create policy "task assignees are isolated by guest user"
 on public.task_assignees
@@ -268,7 +299,8 @@ using (
   and exists (
     select 1 from public.tasks
     where tasks.id = task_assignees.task_id
-    and tasks.user_id = auth.uid()
+    and tasks.scope = 'personal'
+    and tasks.created_by = auth.uid()
   )
   and exists (
     select 1 from public.team_members
@@ -281,7 +313,8 @@ with check (
   and exists (
     select 1 from public.tasks
     where tasks.id = task_assignees.task_id
-    and tasks.user_id = auth.uid()
+    and tasks.scope = 'personal'
+    and tasks.created_by = auth.uid()
   )
   and exists (
     select 1 from public.team_members
@@ -298,6 +331,7 @@ using (
   and exists (
     select 1 from public.tasks
     where tasks.id = task_assignees.task_id
+    and tasks.scope = 'team'
     and public.can_access_workspace(tasks.user_id)
   )
 )
@@ -306,6 +340,7 @@ with check (
   and exists (
     select 1 from public.tasks
     where tasks.id = task_assignees.task_id
+    and tasks.scope = 'team'
     and public.can_access_workspace(tasks.user_id)
   )
 );
@@ -330,7 +365,8 @@ using (
   and exists (
     select 1 from public.tasks
     where tasks.id = task_labels.task_id
-    and tasks.user_id = auth.uid()
+    and tasks.scope = 'personal'
+    and tasks.created_by = auth.uid()
   )
   and exists (
     select 1 from public.labels
@@ -343,7 +379,8 @@ with check (
   and exists (
     select 1 from public.tasks
     where tasks.id = task_labels.task_id
-    and tasks.user_id = auth.uid()
+    and tasks.scope = 'personal'
+    and tasks.created_by = auth.uid()
   )
   and exists (
     select 1 from public.labels
@@ -360,6 +397,7 @@ using (
   and exists (
     select 1 from public.tasks
     where tasks.id = task_labels.task_id
+    and tasks.scope = 'team'
     and public.can_access_workspace(tasks.user_id)
   )
 )
@@ -368,6 +406,7 @@ with check (
   and exists (
     select 1 from public.tasks
     where tasks.id = task_labels.task_id
+    and tasks.scope = 'team'
     and public.can_access_workspace(tasks.user_id)
   )
 );
@@ -380,7 +419,8 @@ using (
   and exists (
     select 1 from public.tasks
     where tasks.id = comments.task_id
-    and tasks.user_id = auth.uid()
+    and tasks.scope = 'personal'
+    and tasks.created_by = auth.uid()
   )
 )
 with check (
@@ -388,7 +428,8 @@ with check (
   and exists (
     select 1 from public.tasks
     where tasks.id = comments.task_id
-    and tasks.user_id = auth.uid()
+    and tasks.scope = 'personal'
+    and tasks.created_by = auth.uid()
   )
 );
 
@@ -399,6 +440,7 @@ using (
   exists (
     select 1 from public.tasks
     where tasks.id = comments.task_id
+    and tasks.scope = 'team'
     and public.can_access_workspace(tasks.user_id)
   )
 )
@@ -407,6 +449,7 @@ with check (
   and exists (
     select 1 from public.tasks
     where tasks.id = comments.task_id
+    and tasks.scope = 'team'
     and public.can_access_workspace(tasks.user_id)
   )
 );
@@ -419,7 +462,8 @@ using (
   and exists (
     select 1 from public.tasks
     where tasks.id = activity_events.task_id
-    and tasks.user_id = auth.uid()
+    and tasks.scope = 'personal'
+    and tasks.created_by = auth.uid()
   )
 )
 with check (
@@ -427,7 +471,8 @@ with check (
   and exists (
     select 1 from public.tasks
     where tasks.id = activity_events.task_id
-    and tasks.user_id = auth.uid()
+    and tasks.scope = 'personal'
+    and tasks.created_by = auth.uid()
   )
 );
 
@@ -438,6 +483,7 @@ using (
   exists (
     select 1 from public.tasks
     where tasks.id = activity_events.task_id
+    and tasks.scope = 'team'
     and public.can_access_workspace(tasks.user_id)
   )
 )
@@ -446,12 +492,19 @@ with check (
   and exists (
     select 1 from public.tasks
     where tasks.id = activity_events.task_id
+    and tasks.scope = 'team'
     and public.can_access_workspace(tasks.user_id)
   )
 );
 
 create index if not exists idx_tasks_user_status_position
   on public.tasks (user_id, status, position);
+
+create index if not exists idx_tasks_user_scope_status_position
+  on public.tasks (user_id, scope, status, position);
+
+create index if not exists idx_tasks_created_by_scope
+  on public.tasks (created_by, scope);
 
 create index if not exists idx_workspace_members_owner
   on public.workspace_members (workspace_owner_id);

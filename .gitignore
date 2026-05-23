@@ -29,3 +29,7 @@ Thumbs.db
 
 # Vite cache
 .vite/
+
+# Go server
+server/task-board-server
+server/.env

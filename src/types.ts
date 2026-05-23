@@ -1,10 +1,13 @@
 export type Status = "todo" | "in_progress" | "in_review" | "done";
 
 export type Priority = "low" | "normal" | "high";
+export type TaskScope = "personal" | "team";
 
 export type Task = {
   id: string;
   user_id: string;
+  created_by: string;
+  scope: TaskScope;
   title: string;
   description: string;
   status: Status;

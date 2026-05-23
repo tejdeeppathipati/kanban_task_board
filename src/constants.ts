@@ -13,20 +13,22 @@ export const PRIORITIES: Array<{ id: Priority; label: string }> = [
   { id: "high", label: "High" },
 ];
 
+// Darker, richer avatar backgrounds for dark mode surfaces.
 export const MEMBER_COLORS = [
-  "#DDEEFF",
-  "#FADADF",
-  "#D7EDCC",
-  "#FDEECB",
-  "#E7E0FA",
-  "#E4E1DC",
+  "#2A2D5E",
+  "#4A2040",
+  "#1E3A2A",
+  "#3D3020",
+  "#352A50",
+  "#2A2A30",
 ];
 
+// Brighter, more vibrant label colors for dark mode visibility.
 export const LABEL_COLORS = [
-  "#1d4ed8",
-  "#047857",
-  "#b45309",
-  "#be123c",
-  "#6d28d9",
-  "#334155",
+  "#2563eb",
+  "#10b981",
+  "#f59e0b",
+  "#ef4444",
+  "#0f766e",
+  "#64748b",
 ];

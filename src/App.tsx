@@ -1,7 +1,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { COLUMNS, LABEL_COLORS, MEMBER_COLORS, PRIORITIES } from "./constants";
-import { isSupabaseConfigured, supabase } from "./lib/supabase";
+import { isSupabaseConfigured, supabase, isApiConfigured, apiFetch } from "./lib/supabase";
 import type {
   ActivityEvent,
   Comment,
@@ -11,6 +11,7 @@ import type {
   Priority,
   Status,
   Task,
+  TaskScope,
   TaskAssignee,
   TaskLabel,
   TaskView,
@@ -37,12 +38,9 @@ const statusNames: Record<Status, string> = {
 const statusAccentClass: Record<Status, string> = {
   todo: "neutral",
   in_progress: "amber",
-  in_review: "violet",
+  in_review: "blue",
   done: "green",
 };
-
-const DEMO_USER_ID = "00000000-0000-4000-8000-000000000001";
-const DEMO_WORKSPACE_ID = "00000000-0000-4000-8000-000000000002";
 
 type AuthMode = "signin" | "signup";
 
@@ -58,6 +56,8 @@ type WorkspaceOption = {
   role: "owner" | "editor" | "viewer";
   status: "active" | "pending";
 };
+
+type BoardScope = TaskScope;
 
 type Collaborator = {
   id: string;
@@ -77,7 +77,6 @@ function App() {
   const [emailVerified, setEmailVerified] = useState(false);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
-  const [localMode, setLocalMode] = useState(false);
   const [workspaces, setWorkspaces] = useState<WorkspaceOption[]>([]);
   const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
   const [tasks, setTasks] = useState<TaskView[]>([]);
@@ -85,19 +84,17 @@ function App() {
   const [labels, setLabels] = useState<Label[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [seeding, setSeeding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [composerOpen, setComposerOpen] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
-  const [localComments, setLocalComments] = useState<Comment[]>([]);
-  const [localActivity, setLocalActivity] = useState<ActivityEvent[]>([]);
   const [commentDraft, setCommentDraft] = useState("");
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
   const [memberDraft, setMemberDraft] = useState("");
   const [labelDraft, setLabelDraft] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
+  const [boardScope, setBoardScope] = useState<BoardScope>("personal");
   const [authMode, setAuthMode] = useState<AuthMode>("signin");
   const [authDraft, setAuthDraft] = useState<AuthDraft>({
     email: "",
@@ -111,90 +108,21 @@ function App() {
     labelId: "all",
     due: "all",
   });
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    const saved = localStorage.getItem("theme");
+    if (saved === "light" || saved === "dark") return saved;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  });
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("theme", theme);
+  }, [theme]);
 
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
   const activeWorkspace =
     workspaces.find((workspace) => workspace.ownerId === workspaceId) ?? null;
   const isWorkspaceOwner = Boolean(userId && workspaceId && userId === workspaceId);
-
-  function startLocalWorkspace() {
-    const now = new Date().toISOString();
-    const demoMembers: TeamMember[] = [
-      {
-        id: "demo-member-you",
-        user_id: DEMO_WORKSPACE_ID,
-        name: "You",
-        color: MEMBER_COLORS[0],
-        avatar_url: null,
-        created_at: now,
-      },
-      {
-        id: "demo-member-product",
-        user_id: DEMO_WORKSPACE_ID,
-        name: "Product",
-        color: MEMBER_COLORS[1],
-        avatar_url: null,
-        created_at: now,
-      },
-      {
-        id: "demo-member-engineering",
-        user_id: DEMO_WORKSPACE_ID,
-        name: "Engineering",
-        color: MEMBER_COLORS[2],
-        avatar_url: null,
-        created_at: now,
-      },
-    ];
-    const demoLabels: Label[] = [
-      {
-        id: "demo-label-backend",
-        user_id: DEMO_WORKSPACE_ID,
-        name: "Backend",
-        color: LABEL_COLORS[0],
-        created_at: now,
-      },
-      {
-        id: "demo-label-feature",
-        user_id: DEMO_WORKSPACE_ID,
-        name: "Feature",
-        color: LABEL_COLORS[1],
-        created_at: now,
-      },
-      {
-        id: "demo-label-ui",
-        user_id: DEMO_WORKSPACE_ID,
-        name: "UI",
-        color: LABEL_COLORS[2],
-        created_at: now,
-      },
-    ];
-
-    setLocalMode(true);
-    setUserId(DEMO_USER_ID);
-    setUserEmail("demo@nextplay.local");
-    setUserName("Demo User");
-    setUserAvatarUrl(null);
-    setEmailVerified(true);
-    setWorkspaceId(DEMO_WORKSPACE_ID);
-    setWorkspaces([
-      {
-        ownerId: DEMO_WORKSPACE_ID,
-        name: "Demo workspace",
-        role: "owner",
-        status: "active",
-      },
-    ]);
-    setMembers(demoMembers);
-    setLabels(demoLabels);
-    setCollaborators([]);
-    setTasks([]);
-    setComments([]);
-    setActivity([]);
-    setLocalComments([]);
-    setLocalActivity([]);
-    setError(null);
-    setLoading(false);
-  }
 
   const ensureProfile = useCallback(async (user: User) => {
     if (!supabase) return;
@@ -364,65 +292,104 @@ function App() {
       try {
         await createStarterData(activeUserId);
 
-        const [
-          taskResult,
-          memberResult,
-          labelResult,
-          assigneeResult,
-          taskLabelResult,
-          collaboratorResult,
-        ] = await Promise.all([
-          supabase
-            .from("tasks")
-            .select("*")
-            .eq("user_id", activeUserId)
-            .order("position", { ascending: true }),
-          supabase
-            .from("team_members")
-            .select("*")
-            .eq("user_id", activeUserId)
-            .order("created_at", { ascending: true }),
-          supabase
-            .from("labels")
-            .select("*")
-            .eq("user_id", activeUserId)
-            .order("name", { ascending: true }),
-          supabase.from("task_assignees").select("*").eq("user_id", activeUserId),
-          supabase.from("task_labels").select("*").eq("user_id", activeUserId),
-          supabase
-            .from("workspace_members")
-            .select("*")
-            .eq("workspace_owner_id", activeUserId)
-            .order("created_at", { ascending: true }),
-        ]);
+        // When the Go API is configured, fetch core data through it.
+        // Assignees, task-labels, and collaborators still use Supabase directly
+        // since the Go API focuses on primary entities.
+        if (isApiConfigured) {
+          const [apiTasks, apiMembers, apiLabels, assigneeResult, taskLabelResult, collaboratorResult] =
+            await Promise.all([
+              apiFetch<Task[]>(`/api/tasks?workspace_id=${activeUserId}`),
+              apiFetch<TeamMember[]>(`/api/team-members?workspace_id=${activeUserId}`),
+              apiFetch<Label[]>(`/api/labels?workspace_id=${activeUserId}`),
+              supabase.from("task_assignees").select("*").eq("user_id", activeUserId),
+              supabase.from("task_labels").select("*").eq("user_id", activeUserId),
+              supabase
+                .from("workspace_members")
+                .select("*")
+                .eq("workspace_owner_id", activeUserId)
+                .order("created_at", { ascending: true }),
+            ]);
 
-        const queryError =
-          taskResult.error ||
-          memberResult.error ||
-          labelResult.error ||
-          assigneeResult.error ||
-          taskLabelResult.error;
+          if (assigneeResult.error || taskLabelResult.error) {
+            throw assigneeResult.error || taskLabelResult.error;
+          }
+          if (collaboratorResult.error) {
+            console.warn("Collaborator list skipped:", collaboratorResult.error.message);
+          }
 
-        if (queryError) throw queryError;
-        if (collaboratorResult.error) {
-          console.warn("Collaborator list skipped:", collaboratorResult.error.message);
+          setMembers(apiMembers);
+          setLabels(apiLabels);
+          setCollaborators((collaboratorResult.data ?? []) as Collaborator[]);
+          setTasks(
+            composeTasks(
+              apiTasks,
+              (assigneeResult.data ?? []) as TaskAssignee[],
+              (taskLabelResult.data ?? []) as TaskLabel[],
+              apiMembers,
+              apiLabels,
+            ),
+          );
+        } else {
+          const [
+            taskResult,
+            memberResult,
+            labelResult,
+            assigneeResult,
+            taskLabelResult,
+            collaboratorResult,
+          ] = await Promise.all([
+            supabase
+              .from("tasks")
+              .select("*")
+              .eq("user_id", activeUserId)
+              .order("position", { ascending: true }),
+            supabase
+              .from("team_members")
+              .select("*")
+              .eq("user_id", activeUserId)
+              .order("created_at", { ascending: true }),
+            supabase
+              .from("labels")
+              .select("*")
+              .eq("user_id", activeUserId)
+              .order("name", { ascending: true }),
+            supabase.from("task_assignees").select("*").eq("user_id", activeUserId),
+            supabase.from("task_labels").select("*").eq("user_id", activeUserId),
+            supabase
+              .from("workspace_members")
+              .select("*")
+              .eq("workspace_owner_id", activeUserId)
+              .order("created_at", { ascending: true }),
+          ]);
+
+          const queryError =
+            taskResult.error ||
+            memberResult.error ||
+            labelResult.error ||
+            assigneeResult.error ||
+            taskLabelResult.error;
+
+          if (queryError) throw queryError;
+          if (collaboratorResult.error) {
+            console.warn("Collaborator list skipped:", collaboratorResult.error.message);
+          }
+
+          const memberRows = (memberResult.data ?? []) as TeamMember[];
+          const labelRowsFull = (labelResult.data ?? []) as Label[];
+
+          setMembers(memberRows);
+          setLabels(labelRowsFull);
+          setCollaborators((collaboratorResult.data ?? []) as Collaborator[]);
+          setTasks(
+            composeTasks(
+              (taskResult.data ?? []) as Task[],
+              (assigneeResult.data ?? []) as TaskAssignee[],
+              (taskLabelResult.data ?? []) as TaskLabel[],
+              memberRows,
+              labelRowsFull,
+            ),
+          );
         }
-
-        const memberRows = (memberResult.data ?? []) as TeamMember[];
-        const labelRowsFull = (labelResult.data ?? []) as Label[];
-
-        setMembers(memberRows);
-        setLabels(labelRowsFull);
-        setCollaborators((collaboratorResult.data ?? []) as Collaborator[]);
-        setTasks(
-          composeTasks(
-            (taskResult.data ?? []) as Task[],
-            (assigneeResult.data ?? []) as TaskAssignee[],
-            (taskLabelResult.data ?? []) as TaskLabel[],
-            memberRows,
-            labelRowsFull,
-          ),
-        );
       } catch (caught) {
         setError(getErrorMessage(caught));
       } finally {
@@ -468,10 +435,10 @@ function App() {
           const { data, error: guestError } = await supabase.auth.signInAnonymously();
           if (guestError || !data.user) {
             if (isMounted) {
-              startLocalWorkspace();
               setError(
-                "Anonymous auth is disabled in Supabase, so a local demo workspace was opened.",
+                "Anonymous auth is disabled in Supabase. Enable anonymous sign-ins or sign in with an account.",
               );
+              setLoading(false);
             }
             return;
           }
@@ -562,27 +529,20 @@ function App() {
     let isMounted = true;
 
     async function loadTaskTimeline() {
-      if (localMode) {
-        if (!selectedTaskId) {
-          setComments([]);
-          setActivity([]);
-          return;
-        }
-        setComments(localComments.filter((comment) => comment.task_id === selectedTaskId));
-        setActivity(
-          localActivity
-            .filter((event) => event.task_id === selectedTaskId)
-            .sort(
-              (a, b) =>
-                new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-            ),
-        );
-        return;
-      }
-
       if (!supabase || !selectedTaskId || !userId) {
         setComments([]);
         setActivity([]);
+        return;
+      }
+
+      if (isApiConfigured) {
+        const [apiComments, apiActivity] = await Promise.all([
+          apiFetch<Comment[]>(`/api/tasks/${selectedTaskId}/comments`),
+          apiFetch<ActivityEvent[]>(`/api/tasks/${selectedTaskId}/activity`),
+        ]);
+        if (!isMounted) return;
+        setComments(apiComments);
+        setActivity(apiActivity);
         return;
       }
 
@@ -614,12 +574,17 @@ function App() {
     return () => {
       isMounted = false;
     };
-  }, [localActivity, localComments, localMode, selectedTaskId, userId]);
+  }, [selectedTaskId, userId]);
+
+  const scopedTasks = useMemo(
+    () => tasks.filter((task) => (task.scope ?? "personal") === boardScope),
+    [boardScope, tasks],
+  );
 
   const visibleTasks = useMemo(() => {
     const search = filters.search.trim().toLowerCase();
 
-    return tasks.filter((task) => {
+    return scopedTasks.filter((task) => {
       const matchesSearch =
         !search ||
         task.title.toLowerCase().includes(search) ||
@@ -647,41 +612,25 @@ function App() {
         matchesDue
       );
     });
-  }, [filters, tasks]);
+  }, [filters, scopedTasks]);
 
   const stats = useMemo(() => {
-    const overdue = tasks.filter((task) => getDueState(task.due_date) === "overdue");
+    const overdue = scopedTasks.filter((task) => getDueState(task.due_date) === "overdue");
     return {
-      total: tasks.length,
-      done: tasks.filter((task) => task.status === "done").length,
+      total: scopedTasks.length,
+      done: scopedTasks.filter((task) => task.status === "done").length,
       overdue: overdue.length,
-      inFlight: tasks.filter(
+      inFlight: scopedTasks.filter(
         (task) => task.status === "in_progress" || task.status === "in_review",
       ).length,
     };
-  }, [tasks]);
+  }, [scopedTasks]);
 
   async function writeActivity(
     taskId: string,
     eventType: ActivityEvent["event_type"],
     message: string,
   ) {
-    if (localMode) {
-      const event: ActivityEvent = {
-        id: createLocalId("activity"),
-        task_id: taskId,
-        user_id: DEMO_USER_ID,
-        event_type: eventType,
-        message,
-        created_at: new Date().toISOString(),
-      };
-      setLocalActivity((current) => [event, ...current]);
-      if (selectedTaskId === taskId) {
-        setActivity((current) => [event, ...current]);
-      }
-      return;
-    }
-
     if (!supabase || !userId) return;
     const { error: activityError } = await supabase.from("activity_events").insert({
       task_id: taskId,
@@ -725,30 +674,33 @@ function App() {
     }
   }
 
-  async function createTask(draft: DraftTask) {
-    if (localMode) {
-      const now = new Date().toISOString();
-      const task: TaskView = {
-        id: createLocalId("task"),
-        user_id: DEMO_WORKSPACE_ID,
-        title: draft.title.trim(),
-        description: draft.description.trim(),
-        status: draft.status,
-        priority: draft.priority,
-        due_date: draft.due_date || null,
-        position: Date.now(),
-        created_at: now,
-        updated_at: now,
-        assignees: members.filter((member) => draft.assigneeIds.includes(member.id)),
-        labels: labels.filter((label) => draft.labelIds.includes(label.id)),
-      };
-      setTasks((current) => [...current, task].sort((a, b) => a.position - b.position));
-      await writeActivity(task.id, "created", "Created task");
-      setComposerOpen(false);
-      setSelectedTaskId(task.id);
-      return;
-    }
+  async function createTaskInSupabase(
+    payload: Pick<
+      Task,
+      | "user_id"
+      | "created_by"
+      | "scope"
+      | "title"
+      | "description"
+      | "status"
+      | "priority"
+      | "due_date"
+      | "position"
+    >,
+  ) {
+    if (!supabase) throw new Error("Supabase is not configured");
 
+    const { data, error: createError } = await supabase
+      .from("tasks")
+      .insert(payload)
+      .select("*")
+      .single();
+
+    if (createError) throw createError;
+    return data as Task;
+  }
+
+  async function createTask(draft: DraftTask) {
     if (!supabase || !userId || !workspaceId) return;
 
     setSaving(true);
@@ -756,23 +708,33 @@ function App() {
     setAuthNotice(null);
 
     try {
-      const { data, error: createError } = await supabase
-        .from("tasks")
-        .insert({
+      const task = isApiConfigured
+        ? await apiFetch<Task>("/api/tasks", {
+            method: "POST",
+            body: JSON.stringify({
+              user_id: workspaceId,
+              created_by: userId,
+              scope: boardScope,
+              title: draft.title.trim(),
+              description: draft.description.trim(),
+              status: draft.status,
+              priority: draft.priority,
+              due_date: draft.due_date || null,
+              position: Date.now(),
+            }),
+          })
+        : await createTaskInSupabase({
           user_id: workspaceId,
+          created_by: userId,
+          scope: boardScope,
           title: draft.title.trim(),
           description: draft.description.trim(),
           status: draft.status,
           priority: draft.priority,
           due_date: draft.due_date || null,
           position: Date.now(),
-        })
-        .select("*")
-        .single();
+        });
 
-      if (createError) throw createError;
-
-      const task = data as Task;
       await replaceTaskLinks(task.id, draft.assigneeIds, draft.labelIds);
       await writeActivity(task.id, "created", "Created task");
       await loadBoard(workspaceId);
@@ -786,48 +748,37 @@ function App() {
   }
 
   async function updateTask(taskId: string, draft: DraftTask) {
-    if (localMode) {
-      setTasks((current) =>
-        current.map((task) =>
-          task.id === taskId
-            ? {
-                ...task,
-                title: draft.title.trim(),
-                description: draft.description.trim(),
-                status: draft.status,
-                priority: draft.priority,
-                due_date: draft.due_date || null,
-                assignees: members.filter((member) =>
-                  draft.assigneeIds.includes(member.id),
-                ),
-                labels: labels.filter((label) => draft.labelIds.includes(label.id)),
-                updated_at: new Date().toISOString(),
-              }
-            : task,
-        ),
-      );
-      await writeActivity(taskId, "updated", "Updated task details");
-      return;
-    }
-
     if (!supabase || !userId || !workspaceId) return;
 
     setSaving(true);
     setError(null);
 
     try {
-      const { error: updateError } = await supabase
-        .from("tasks")
-        .update({
+      if (isApiConfigured) {
+        await apiFetch<Task>(`/api/tasks/${taskId}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            title: draft.title.trim(),
+            description: draft.description.trim(),
+            status: draft.status,
+            priority: draft.priority,
+            due_date: draft.due_date || null,
+          }),
+        });
+      } else {
+        const { error: updateError } = await supabase
+          .from("tasks")
+          .update({
           title: draft.title.trim(),
           description: draft.description.trim(),
           status: draft.status,
           priority: draft.priority,
           due_date: draft.due_date || null,
-        })
-        .eq("id", taskId);
+          })
+          .eq("id", taskId);
 
-      if (updateError) throw updateError;
+        if (updateError) throw updateError;
+      }
 
       await replaceTaskLinks(taskId, draft.assigneeIds, draft.labelIds);
       await writeActivity(taskId, "updated", "Updated task details");
@@ -844,39 +795,6 @@ function App() {
     nextStatus: Status,
     beforeTaskId?: string,
   ) {
-    if (localMode) {
-      const task = tasks.find((item) => item.id === taskId);
-      if (!task) {
-        setDraggingTaskId(null);
-        return;
-      }
-      const nextPosition = getNextPosition(tasks, taskId, nextStatus, beforeTaskId);
-      const previousStatus = task.status;
-      setDraggingTaskId(null);
-      setTasks((current) =>
-        current
-          .map((item) =>
-            item.id === taskId
-              ? {
-                  ...item,
-                  status: nextStatus,
-                  position: nextPosition,
-                  updated_at: new Date().toISOString(),
-                }
-              : item,
-          )
-          .sort((a, b) => a.position - b.position),
-      );
-      await writeActivity(
-        taskId,
-        "moved",
-        previousStatus === nextStatus
-          ? `Reordered in ${statusNames[nextStatus]}`
-          : `Moved from ${statusNames[previousStatus]} to ${statusNames[nextStatus]}`,
-      );
-      return;
-    }
-
     if (!supabase || !userId || !workspaceId) return;
 
     const task = tasks.find((item) => item.id === taskId);
@@ -897,12 +815,19 @@ function App() {
     );
 
     try {
-      const { error: moveError } = await supabase
-        .from("tasks")
-        .update({ status: nextStatus, position: nextPosition })
-        .eq("id", taskId);
+      if (isApiConfigured) {
+        await apiFetch<Task>(`/api/tasks/${taskId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ status: nextStatus, position: nextPosition }),
+        });
+      } else {
+        const { error: moveError } = await supabase
+          .from("tasks")
+          .update({ status: nextStatus, position: nextPosition })
+          .eq("id", taskId);
 
-      if (moveError) throw moveError;
+        if (moveError) throw moveError;
+      }
 
       await writeActivity(
         taskId,
@@ -919,22 +844,6 @@ function App() {
   }
 
   async function deleteTask(taskId: string) {
-    if (localMode) {
-      const shouldDelete = window.confirm(
-        "Delete this task and its comments/activity permanently?",
-      );
-      if (!shouldDelete) return;
-      setTasks((current) => current.filter((task) => task.id !== taskId));
-      setLocalComments((current) =>
-        current.filter((comment) => comment.task_id !== taskId),
-      );
-      setLocalActivity((current) =>
-        current.filter((event) => event.task_id !== taskId),
-      );
-      setSelectedTaskId(null);
-      return;
-    }
-
     if (!supabase || !userId || !workspaceId) return;
 
     const shouldDelete = window.confirm(
@@ -946,13 +855,17 @@ function App() {
     setError(null);
 
     try {
-      const { error: deleteError } = await supabase
-        .from("tasks")
-        .delete()
-        .eq("id", taskId)
-        .eq("user_id", workspaceId);
+      if (isApiConfigured) {
+        await apiFetch(`/api/tasks/${taskId}`, { method: "DELETE" });
+      } else {
+        const { error: deleteError } = await supabase
+          .from("tasks")
+          .delete()
+          .eq("id", taskId)
+          .eq("user_id", workspaceId);
 
-      if (deleteError) throw deleteError;
+        if (deleteError) throw deleteError;
+      }
 
       setSelectedTaskId(null);
       await loadBoard(workspaceId, false);
@@ -963,221 +876,33 @@ function App() {
     }
   }
 
-  async function loadSampleWorkspace() {
-    if (localMode) {
-      if (seeding) return;
-      setSeeding(true);
-      const activeMembers = members.length ? members : [];
-      const activeLabels = labels.length ? labels : [];
-      const now = Date.now();
-      const sampleTasks: TaskView[] = [
-        {
-          id: createLocalId("task"),
-          user_id: DEMO_WORKSPACE_ID,
-          title: "Implement workspace collaboration",
-          description: "Invite teammates, switch workspaces, and keep board actions working.",
-          status: "todo",
-          priority: "high",
-          due_date: dateOffset(1),
-          position: now,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          assignees: activeMembers[0] ? [activeMembers[0]] : [],
-          labels: activeLabels[1] ? [activeLabels[1]] : [],
-        },
-        {
-          id: createLocalId("task"),
-          user_id: DEMO_WORKSPACE_ID,
-          title: "Polish compact product UI",
-          description: "Keep the board dense, readable, and usable on smaller screens.",
-          status: "in_progress",
-          priority: "normal",
-          due_date: dateOffset(3),
-          position: now + 1,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          assignees: activeMembers[1] ? [activeMembers[1]] : [],
-          labels: activeLabels[2] ? [activeLabels[2]] : [],
-        },
-        {
-          id: createLocalId("task"),
-          user_id: DEMO_WORKSPACE_ID,
-          title: "Ship auth and invite flow",
-          description: "Make sign in, guest mode, and invitations obvious and testable.",
-          status: "in_review",
-          priority: "high",
-          due_date: dateOffset(0),
-          position: now + 2,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          assignees: activeMembers[2] ? [activeMembers[2]] : [],
-          labels: activeLabels[0] ? [activeLabels[0]] : [],
-        },
-      ];
-      setTasks(sampleTasks);
-      setSeeding(false);
-      return;
-    }
-
-    if (!supabase || !userId || !workspaceId || seeding) return;
-
-    setSeeding(true);
-    setError(null);
-
-    try {
-      const activeMembers = members.length ? members : await fetchMembers(workspaceId);
-      const activeLabels = labels.length ? labels : await fetchLabels(workspaceId);
-
-      const sampleTasks = [
-        {
-          title: "Tighten public launch checklist",
-          description:
-            "Confirm analytics, error states, rollback plan, and support handoff before the demo link is shared.",
-          status: "todo" as Status,
-          priority: "high" as Priority,
-          due_date: dateOffset(1),
-          memberIndex: 0,
-          labelIndex: 1,
-        },
-        {
-          title: "Design mobile board polish",
-          description:
-            "Review column spacing, drawer behavior, and card density on narrow screens.",
-          status: "in_progress" as Status,
-          priority: "normal" as Priority,
-          due_date: dateOffset(3),
-          memberIndex: 1,
-          labelIndex: 2,
-        },
-        {
-          title: "Write RLS verification notes",
-          description:
-            "Document how user_id ownership and auth.uid policies isolate anonymous guest data.",
-          status: "in_review" as Status,
-          priority: "high" as Priority,
-          due_date: dateOffset(0),
-          memberIndex: 2,
-          labelIndex: 1,
-        },
-        {
-          title: "Fix empty state copy",
-          description:
-            "Make the first-run board useful for evaluators without adding instructional clutter.",
-          status: "done" as Status,
-          priority: "low" as Priority,
-          due_date: dateOffset(-2),
-          memberIndex: 1,
-          labelIndex: 2,
-        },
-        {
-          title: "QA drag and drop persistence",
-          description:
-            "Move tasks across every column and refresh to confirm status and ordering are persisted.",
-          status: "todo" as Status,
-          priority: "normal" as Priority,
-          due_date: dateOffset(5),
-          memberIndex: 2,
-          labelIndex: 0,
-        },
-        {
-          title: "Prepare final assessment PDF",
-          description:
-            "Add live URL, GitHub URL, schema summary, tradeoffs, and screenshots from the deployed app.",
-          status: "in_progress" as Status,
-          priority: "high" as Priority,
-          due_date: dateOffset(2),
-          memberIndex: 0,
-          labelIndex: 1,
-        },
-      ];
-
-      for (const [index, sample] of sampleTasks.entries()) {
-        const { data, error: createError } = await supabase
-          .from("tasks")
-          .insert({
-            user_id: workspaceId,
-            title: sample.title,
-            description: sample.description,
-            status: sample.status,
-            priority: sample.priority,
-            due_date: sample.due_date,
-            position: Date.now() + index,
-          })
-          .select("*")
-          .single();
-
-        if (createError) throw createError;
-
-        const task = data as Task;
-        const member = activeMembers[sample.memberIndex % activeMembers.length];
-        const label = activeLabels[sample.labelIndex % activeLabels.length];
-
-        if (member) {
-          const { error: assigneeError } = await supabase
-            .from("task_assignees")
-            .insert({
-              task_id: task.id,
-              member_id: member.id,
-              user_id: workspaceId,
-            });
-          if (assigneeError) throw assigneeError;
-        }
-
-        if (label) {
-          const { error: labelError } = await supabase.from("task_labels").insert({
-            task_id: task.id,
-            label_id: label.id,
-            user_id: workspaceId,
-          });
-          if (labelError) throw labelError;
-        }
-
-        const { error: commentError } = await supabase.from("comments").insert({
-          task_id: task.id,
-          user_id: userId,
-          body: "Sample note: this task demonstrates comments, ownership, labels, assignees, and due date states.",
-        });
-        if (commentError) throw commentError;
-
-        await writeActivity(task.id, "created", "Created sample task");
-      }
-
-      await loadBoard(workspaceId, false);
-    } catch (caught) {
-      setError(getErrorMessage(caught));
-    } finally {
-      setSeeding(false);
-    }
-  }
-
   async function addMember(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (localMode) {
-      if (!memberDraft.trim()) return;
-      const member: TeamMember = {
-        id: createLocalId("member"),
-        user_id: DEMO_WORKSPACE_ID,
-        name: memberDraft.trim(),
-        color: MEMBER_COLORS[members.length % MEMBER_COLORS.length],
-        avatar_url: null,
-        created_at: new Date().toISOString(),
-      };
-      setMembers((current) => [...current, member]);
-      setMemberDraft("");
-      return;
-    }
-
     if (!supabase || !workspaceId || !memberDraft.trim()) return;
 
     const color = MEMBER_COLORS[members.length % MEMBER_COLORS.length];
-    const { error: memberError } = await supabase.from("team_members").insert({
-      user_id: workspaceId,
-      name: memberDraft.trim(),
-      color,
-    });
 
-    if (memberError) {
-      setError(getErrorMessage(memberError));
+    try {
+      if (isApiConfigured) {
+        await apiFetch<TeamMember>("/api/team-members", {
+          method: "POST",
+          body: JSON.stringify({
+            user_id: workspaceId,
+            name: memberDraft.trim(),
+            color,
+          }),
+        });
+      } else {
+        const { error: memberError } = await supabase.from("team_members").insert({
+          user_id: workspaceId,
+          name: memberDraft.trim(),
+          color,
+        });
+
+        if (memberError) throw memberError;
+      }
+    } catch (caught) {
+      setError(getErrorMessage(caught));
       return;
     }
 
@@ -1187,31 +912,31 @@ function App() {
 
   async function addLabel(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (localMode) {
-      if (!labelDraft.trim()) return;
-      const label: Label = {
-        id: createLocalId("label"),
-        user_id: DEMO_WORKSPACE_ID,
-        name: labelDraft.trim(),
-        color: LABEL_COLORS[labels.length % LABEL_COLORS.length],
-        created_at: new Date().toISOString(),
-      };
-      setLabels((current) => [...current, label]);
-      setLabelDraft("");
-      return;
-    }
-
     if (!supabase || !workspaceId || !labelDraft.trim()) return;
 
     const color = LABEL_COLORS[labels.length % LABEL_COLORS.length];
-    const { error: labelError } = await supabase.from("labels").insert({
-      user_id: workspaceId,
-      name: labelDraft.trim(),
-      color,
-    });
 
-    if (labelError) {
-      setError(getErrorMessage(labelError));
+    try {
+      if (isApiConfigured) {
+        await apiFetch<Label>("/api/labels", {
+          method: "POST",
+          body: JSON.stringify({
+            user_id: workspaceId,
+            name: labelDraft.trim(),
+            color,
+          }),
+        });
+      } else {
+        const { error: labelError } = await supabase.from("labels").insert({
+          user_id: workspaceId,
+          name: labelDraft.trim(),
+          color,
+        });
+
+        if (labelError) throw labelError;
+      }
+    } catch (caught) {
+      setError(getErrorMessage(caught));
       return;
     }
 
@@ -1219,79 +944,57 @@ function App() {
     await loadBoard(workspaceId);
   }
 
-  async function fetchMembers(activeUserId: string) {
-    if (!supabase) return [];
-    const { data, error: memberError } = await supabase
-      .from("team_members")
-      .select("*")
-      .eq("user_id", activeUserId)
-      .order("created_at", { ascending: true });
-    if (memberError) throw memberError;
-    return (data ?? []) as TeamMember[];
-  }
-
-  async function fetchLabels(activeUserId: string) {
-    if (!supabase) return [];
-    const { data, error: labelError } = await supabase
-      .from("labels")
-      .select("*")
-      .eq("user_id", activeUserId)
-      .order("name", { ascending: true });
-    if (labelError) throw labelError;
-    return (data ?? []) as Label[];
-  }
-
   async function addComment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (localMode) {
-      if (!selectedTaskId || !commentDraft.trim()) return;
-      const comment: Comment = {
-        id: createLocalId("comment"),
-        task_id: selectedTaskId,
-        user_id: DEMO_USER_ID,
-        body: commentDraft.trim(),
-        created_at: new Date().toISOString(),
-      };
-      setLocalComments((current) => [...current, comment]);
-      setComments((current) => [...current, comment]);
-      setCommentDraft("");
-      await writeActivity(selectedTaskId, "commented", "Added a comment");
-      return;
-    }
-
     if (!supabase || !userId || !selectedTaskId || !commentDraft.trim()) return;
 
     setSaving(true);
     try {
-      const { error: commentError } = await supabase.from("comments").insert({
-        task_id: selectedTaskId,
-        user_id: userId,
-        body: commentDraft.trim(),
-      });
-      if (commentError) throw commentError;
+      if (isApiConfigured) {
+        await apiFetch<Comment>(`/api/tasks/${selectedTaskId}/comments`, {
+          method: "POST",
+          body: JSON.stringify({ body: commentDraft.trim() }),
+        });
+      } else {
+        const { error: commentError } = await supabase.from("comments").insert({
+          task_id: selectedTaskId,
+          user_id: userId,
+          body: commentDraft.trim(),
+        });
+        if (commentError) throw commentError;
+      }
 
       await writeActivity(selectedTaskId, "commented", "Added a comment");
       setCommentDraft("");
 
-      const [commentResult, activityResult] = await Promise.all([
-        supabase
-          .from("comments")
-          .select("*")
-          .eq("task_id", selectedTaskId)
-          .order("created_at", { ascending: true }),
-        supabase
-          .from("activity_events")
-          .select("*")
-          .eq("task_id", selectedTaskId)
-          .order("created_at", { ascending: false }),
-      ]);
+      if (isApiConfigured) {
+        const [apiComments, apiActivity] = await Promise.all([
+          apiFetch<Comment[]>(`/api/tasks/${selectedTaskId}/comments`),
+          apiFetch<ActivityEvent[]>(`/api/tasks/${selectedTaskId}/activity`),
+        ]);
+        setComments(apiComments);
+        setActivity(apiActivity);
+      } else {
+        const [commentResult, activityResult] = await Promise.all([
+          supabase
+            .from("comments")
+            .select("*")
+            .eq("task_id", selectedTaskId)
+            .order("created_at", { ascending: true }),
+          supabase
+            .from("activity_events")
+            .select("*")
+            .eq("task_id", selectedTaskId)
+            .order("created_at", { ascending: false }),
+        ]);
 
-      if (commentResult.error || activityResult.error) {
-        throw commentResult.error || activityResult.error;
+        if (commentResult.error || activityResult.error) {
+          throw commentResult.error || activityResult.error;
+        }
+
+        setComments((commentResult.data ?? []) as Comment[]);
+        setActivity((activityResult.data ?? []) as ActivityEvent[]);
       }
-
-      setComments((commentResult.data ?? []) as Comment[]);
-      setActivity((activityResult.data ?? []) as ActivityEvent[]);
     } catch (caught) {
       setError(getErrorMessage(caught));
     } finally {
@@ -1401,8 +1104,7 @@ function App() {
     try {
       const { data, error: authError } = await supabase.auth.signInAnonymously();
       if (authError) {
-        startLocalWorkspace();
-        setError("Anonymous auth is disabled in Supabase, so a local demo workspace was opened.");
+        setError("Anonymous auth is disabled in Supabase. Enable it or sign in with an account.");
         return;
       }
       if (!data.user) throw new Error("Could not start a guest workspace.");
@@ -1415,28 +1117,6 @@ function App() {
   }
 
   async function signOut() {
-    if (localMode) {
-      setLocalMode(false);
-      setUserId(null);
-      setUserEmail("");
-      setUserName("Guest user");
-      setUserAvatarUrl(null);
-      setEmailVerified(false);
-      setAuthNotice(null);
-      setWorkspaceId(null);
-      setWorkspaces([]);
-      setCollaborators([]);
-      setTasks([]);
-      setMembers([]);
-      setLabels([]);
-      setComments([]);
-      setActivity([]);
-      setLocalComments([]);
-      setLocalActivity([]);
-      setSelectedTaskId(null);
-      return;
-    }
-
     if (!supabase) return;
     await supabase.auth.signOut();
     setUserId(null);
@@ -1455,46 +1135,15 @@ function App() {
   }
 
   async function changeWorkspace(nextWorkspaceId: string) {
-    if (localMode) {
-      setWorkspaceId(nextWorkspaceId);
-      return;
-    }
-
     setWorkspaceId(nextWorkspaceId);
     setSelectedTaskId(null);
+    setBoardScope("personal");
+    setFilters((current) => ({ ...current, assigneeId: "all" }));
     await loadBoard(nextWorkspaceId);
   }
 
   async function addCollaborator(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (localMode) {
-      if (!inviteEmail.trim()) return;
-      const email = inviteEmail.trim().toLowerCase();
-      const collaborator: Collaborator = {
-        id: createLocalId("collaborator"),
-        workspace_owner_id: DEMO_WORKSPACE_ID,
-        email,
-        member_user_id: null,
-        role: "editor",
-        status: "pending",
-        created_at: new Date().toISOString(),
-      };
-      setCollaborators((current) => [...current, collaborator]);
-      setMembers((current) => [
-        ...current,
-        {
-          id: createLocalId("member"),
-          user_id: DEMO_WORKSPACE_ID,
-          name: email,
-          color: MEMBER_COLORS[current.length % MEMBER_COLORS.length],
-          avatar_url: null,
-          created_at: new Date().toISOString(),
-        },
-      ]);
-      setInviteEmail("");
-      return;
-    }
-
     if (!supabase || !workspaceId || !userId || !inviteEmail.trim()) return;
 
     setSaving(true);
@@ -1535,7 +1184,7 @@ function App() {
   }
 
   if (!isSupabaseConfigured) {
-    return <SetupScreen onDemo={startLocalWorkspace} />;
+    return <SetupScreen />;
   }
 
   if (!userId) {
@@ -1560,12 +1209,13 @@ function App() {
   return (
     <main className="app-shell">
       <TopBar
-        members={members}
+        theme={theme}
+        onToggleTheme={() => setTheme(theme === "light" ? "dark" : "light")}
         userEmail={userEmail}
         userName={userName}
         userAvatarUrl={userAvatarUrl}
         emailVerified={emailVerified}
-        isGuest={!userEmail || localMode}
+        isGuest={!userEmail}
         workspaces={workspaces}
         workspaceId={workspaceId}
         filters={filters}
@@ -1575,7 +1225,7 @@ function App() {
         onSignOut={signOut}
       />
 
-      {!emailVerified && !localMode && (
+      {!emailVerified && (
         <EmailVerificationBar
           email={userEmail}
           saving={saving}
@@ -1587,10 +1237,8 @@ function App() {
         stats={stats}
         filters={filters}
         setFilters={setFilters}
-        members={members}
-        canSeed={!loading && Boolean(workspaceId) && tasks.length === 0}
-        seeding={seeding}
-        onSeed={loadSampleWorkspace}
+        boardScope={boardScope}
+        setBoardScope={setBoardScope}
       />
 
       {error && (
@@ -1615,7 +1263,7 @@ function App() {
                   status={column.id}
                   title={column.title}
                   tasks={visibleTasks.filter((task) => task.status === column.id)}
-                  totalCount={tasks.filter((task) => task.status === column.id).length}
+                  totalCount={scopedTasks.filter((task) => task.status === column.id).length}
                   draggingTaskId={draggingTaskId}
                   onDropTask={moveTask}
                   onOpenTask={setSelectedTaskId}
@@ -1716,11 +1364,11 @@ function AuthScreen({
               <path d="M2 2h5v5H2V2zm7 0h5v5H9V2zM2 9h5v5H2V9zm7 3.5a2.5 2.5 0 1 0 5 0 2.5 2.5 0 0 0-5 0z" />
             </svg>
           </div>
-          <span className="project-name">Next Play</span>
+            <span className="project-name">Task Board</span>
         </div>
         <h1>{mode === "signin" ? "Sign in to your workspace" : "Create your workspace"}</h1>
         <p>
-          Run sprint boards with persistent tasks, invited collaborators, labels,
+          Run project boards with persistent tasks, invited collaborators, labels,
           comments, and activity history.
         </p>
 
@@ -1812,7 +1460,8 @@ function AuthScreen({
 }
 
 function TopBar({
-  members,
+  theme,
+  onToggleTheme,
   userEmail,
   userName,
   userAvatarUrl,
@@ -1826,7 +1475,8 @@ function TopBar({
   onCreate,
   onSignOut,
 }: {
-  members: TeamMember[];
+  theme: "light" | "dark";
+  onToggleTheme: () => void;
   userEmail: string;
   userName: string;
   userAvatarUrl: string | null;
@@ -1848,34 +1498,23 @@ function TopBar({
             <path d="M2 2h5v5H2V2zm7 0h5v5H9V2zM2 9h5v5H2V9zm7 3.5a2.5 2.5 0 1 0 5 0 2.5 2.5 0 0 0-5 0z" />
           </svg>
         </div>
-        <span className="project-name">Next Play</span>
+        <span className="project-name">Task Board</span>
         <span className="project-slash">/</span>
-        <span className="sprint-name">Sprint 3 - Platform Core</span>
-      </div>
-      <div className="topbar-divider" />
-      <div className="topbar-right">
-        <div className="workspace-switcher">
-          <span>Workspace</span>
-          <select
-            className="workspace-select"
-            value={workspaceId ?? ""}
-            onChange={(event) => onWorkspaceChange(event.target.value)}
-            aria-label="Active workspace"
-          >
-            {workspaces.map((workspace) => (
-              <option key={workspace.ownerId} value={workspace.ownerId}>
-                {workspace.name}
-                {workspace.role !== "owner" ? ` (${workspace.role})` : ""}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="avatar-stack topbar-avatars" aria-label="Workspace members">
-          {members.slice(0, 4).map((member) => (
-            <Avatar key={member.id} member={member} />
+        <select
+          className="breadcrumb-select"
+          value={workspaceId ?? ""}
+          onChange={(event) => onWorkspaceChange(event.target.value)}
+          aria-label="Active workspace"
+        >
+          {workspaces.map((workspace) => (
+            <option key={workspace.ownerId} value={workspace.ownerId}>
+              {workspace.name}
+              {workspace.role !== "owner" ? ` (${workspace.role})` : ""}
+            </option>
           ))}
-        </div>
-        <div className="topbar-divider" />
+        </select>
+      </div>
+      <div className="topbar-right">
         <label className="search-wrap">
           <svg
             className="search-ico"
@@ -1909,8 +1548,35 @@ function TopBar({
             <line x1="6" y1="1" x2="6" y2="11" />
             <line x1="1" y1="6" x2="11" y2="6" />
           </svg>
-          New Task
+          New task
         </button>
+        <button
+          className="ghost-button theme-toggle"
+          type="button"
+          onClick={onToggleTheme}
+          aria-label="Toggle theme"
+          title={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
+          style={{ padding: "7px", display: "flex", alignItems: "center" }}
+        >
+          {theme === "light" ? (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+              <circle cx="12" cy="12" r="5"></circle>
+              <line x1="12" y1="1" x2="12" y2="3"></line>
+              <line x1="12" y1="21" x2="12" y2="23"></line>
+              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+              <line x1="1" y1="12" x2="3" y2="12"></line>
+              <line x1="21" y1="12" x2="23" y2="12"></line>
+              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+            </svg>
+          )}
+        </button>
+        <div className="topbar-divider" />
         <button className="account-button" type="button" onClick={onSignOut}>
           <span className="account-avatar">
             {userAvatarUrl ? (
@@ -1952,10 +1618,8 @@ function BoardSummary({
   stats,
   filters,
   setFilters,
-  members,
-  canSeed,
-  seeding,
-  onSeed,
+  boardScope,
+  setBoardScope,
 }: {
   stats: {
     total: number;
@@ -1965,12 +1629,9 @@ function BoardSummary({
   };
   filters: Filters;
   setFilters: (filters: Filters) => void;
-  members: TeamMember[];
-  canSeed: boolean;
-  seeding: boolean;
-  onSeed: () => void;
+  boardScope: BoardScope;
+  setBoardScope: (scope: BoardScope) => void;
 }) {
-  const firstMember = members[0];
   const isAll =
     filters.priority === "all" &&
     filters.assigneeId === "all" &&
@@ -1978,8 +1639,8 @@ function BoardSummary({
     filters.due === "all";
 
   return (
-    <section className="summary-bar" aria-label="Board summary and filters">
-      <div className="stat-strip">
+    <section className="summary-bar" aria-label="Board filters">
+      <div className="stat-strip" aria-label="Board summary">
         <Stat label="Total" value={stats.total} />
         <Stat label="Done" value={stats.done} />
         <Stat
@@ -1988,6 +1649,22 @@ function BoardSummary({
           tone={stats.overdue ? "danger" : ""}
         />
         <Stat label="In flight" value={stats.inFlight} />
+      </div>
+      <div className="space-toggle" aria-label="Board scope">
+        <button
+          className={boardScope === "personal" ? "active" : ""}
+          type="button"
+          onClick={() => setBoardScope("personal")}
+        >
+          Personal
+        </button>
+        <button
+          className={boardScope === "team" ? "active" : ""}
+          type="button"
+          onClick={() => setBoardScope("team")}
+        >
+          Team
+        </button>
       </div>
       <div className="quick-filters" aria-label="Quick filters">
         <FilterChip
@@ -2014,19 +1691,6 @@ function BoardSummary({
           }
         />
         <FilterChip
-          label="My tasks"
-          active={Boolean(firstMember && filters.assigneeId === firstMember.id)}
-          disabled={!firstMember}
-          onClick={() => {
-            if (!firstMember) return;
-            setFilters({
-              ...filters,
-              assigneeId:
-                filters.assigneeId === firstMember.id ? "all" : firstMember.id,
-            });
-          }}
-        />
-        <FilterChip
           label="Overdue"
           active={filters.due === "overdue"}
           onClick={() =>
@@ -2036,16 +1700,6 @@ function BoardSummary({
             })
           }
         />
-        {canSeed && (
-          <button
-            className="filter-chip seed-chip"
-            type="button"
-            onClick={onSeed}
-            disabled={seeding}
-          >
-            {seeding ? "Loading..." : "Load sample board"}
-          </button>
-        )}
       </div>
     </section>
   );
@@ -2691,7 +2345,7 @@ function BoardSkeleton() {
   );
 }
 
-function SetupScreen({ onDemo }: { onDemo: () => void }) {
+function SetupScreen() {
   return (
     <main className="setup-screen">
       <section className="setup-panel">
@@ -2708,9 +2362,6 @@ function SetupScreen({ onDemo }: { onDemo: () => void }) {
             VITE_SUPABASE_ANON_KEY=your-public-anon-key
           </code>
         </pre>
-        <button className="btn-new setup-demo-button" type="button" onClick={onDemo}>
-          Preview locally
-        </button>
       </section>
     </main>
   );
@@ -2760,12 +2411,6 @@ function getNextPosition(
   return (previousTask.position + beforeTask.position) / 2;
 }
 
-function dateOffset(days: number) {
-  const date = new Date();
-  date.setDate(date.getDate() + days);
-  return date.toISOString().slice(0, 10);
-}
-
 function formatShortDate(value: string) {
   return new Intl.DateTimeFormat(undefined, {
     month: "short",
@@ -2792,6 +2437,14 @@ function getErrorMessage(error: unknown) {
 
 function getAvatarTextColor(color: string) {
   const colors: Record<string, string> = {
+    // Dark mode text pairs
+    "#2A2D5E": "#A5B4FC",
+    "#4A2040": "#F9A8D4",
+    "#1E3A2A": "#6EE7B7",
+    "#3D3020": "#FCD34D",
+    "#352A50": "#C4B5FD",
+    "#2A2A30": "#A1A1AA",
+    // Light mode text pairs
     "#DDEEFF": "#1557A0",
     "#FADADF": "#8C2040",
     "#D7EDCC": "#2E6013",
@@ -2799,11 +2452,7 @@ function getAvatarTextColor(color: string) {
     "#E7E0FA": "#4B3BA5",
     "#E4E1DC": "#514C45",
   };
-  return colors[color.toUpperCase()] ?? "#1A1917";
-}
-
-function createLocalId(prefix: string) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return colors[color.toUpperCase()] ?? colors[color] ?? "#EDEDEF";
 }
 
 function getUserProfile(user: User) {
