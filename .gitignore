@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Local environment files
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# TypeScript
+*.tsbuildinfo
+node_modules/.tmp/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Vite cache
+.vite/
+
+# Go server
+server/task-board-server
+server/.env
+server/.agents/
+server/skills-lock.json
